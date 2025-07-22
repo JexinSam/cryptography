@@ -96,7 +96,7 @@ jobs:
           - PYTHON: { VERSION: "pp311-pypy311_pp73" }
             MANYLINUX: { NAME: "musllinux_1_2_aarch64", CONTAINER: "cryptography-musllinux_1_2:aarch64", RUNNER: "ubuntu-24.04-arm" }
 
-            # We also don't build pypy wheels for anything except the latest manylinux
+          # We also don't build pypy wheels for anything except the latest manylinux
           - PYTHON: { VERSION: "pp310-pypy310_pp73" }
             MANYLINUX: { NAME: "manylinux2014_x86_64", CONTAINER: "cryptography-manylinux2014:x86_64", RUNNER: "ubuntu-latest"}
           - PYTHON: { VERSION: "pp310-pypy310_pp73" }
@@ -300,23 +300,30 @@ jobs:
 
   windows:
     needs: [sdist]
-    runs-on: windows-latest
+    # Dynamically select the runner based on matrix configuration
+    runs-on: ${{ matrix.WINDOWS.RUNNER }}
     strategy:
       fail-fast: false
       matrix:
         WINDOWS:
-          - {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc'}
-          - {ARCH: 'x64', WINDOWS: 'win64', RUST_TRIPLE: 'x86_64-pc-windows-msvc'}
+          - {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc', RUNNER: 'windows-latest'}
+          - {ARCH: 'x64', WINDOWS: 'win64', RUST_TRIPLE: 'x86_64-pc-windows-msvc', RUNNER: 'windows-latest'}
+          - {ARCH: 'arm64', WINDOWS: 'arm64', RUST_TRIPLE: 'aarch64-pc-windows-msvc', RUNNER: 'windows-latest-arm64'} # Added ARM64
         PYTHON:
           - {VERSION: "3.11", "ABI_VERSION": "py38"}
           - {VERSION: "3.11", "ABI_VERSION": "py311"}
           - {VERSION: "pypy-3.10"}
           - {VERSION: "pypy-3.11"}
         exclude:
-          # We need to exclude the below configuration because there is no 32-bit pypy3
-          - WINDOWS: {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc'}
+          # Exclude 32-bit PyPy (x86) as it's not available
+          - WINDOWS: {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc', RUNNER: 'windows-latest'}
             PYTHON: {VERSION: "pypy-3.10"}
-          - WINDOWS: {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc'}
+          - WINDOWS: {ARCH: 'x86', WINDOWS: 'win32', RUST_TRIPLE: 'i686-pc-windows-msvc', RUNNER: 'windows-latest'}
+            PYTHON: {VERSION: "pypy-3.11"}
+          # Exclude PyPy on ARM64 as it's not commonly available or supported
+          - WINDOWS: {ARCH: 'arm64', WINDOWS: 'arm64', RUST_TRIPLE: 'aarch64-pc-windows-msvc', RUNNER: 'windows-latest-arm64'}
+            PYTHON: {VERSION: "pypy-3.10"}
+          - WINDOWS: {ARCH: 'arm64', WINDOWS: 'arm64', RUST_TRIPLE: 'aarch64-pc-windows-msvc', RUNNER: 'windows-latest-arm64'}
             PYTHON: {VERSION: "pypy-3.11"}
     name: "${{ matrix.PYTHON.VERSION }} ${{ matrix.WINDOWS.WINDOWS }} ${{ matrix.PYTHON.ABI_VERSION }}"
     steps:
@@ -351,7 +358,7 @@ jobs:
           workflow: build-windows-openssl.yml
           branch: main
           workflow_conclusion: success
-          name: "openssl-${{ matrix.WINDOWS.WINDOWS }}"
+          name: "openssl-${{ matrix.WINDOWS.WINDOWS }}" # This will now download 'openssl-arm64' for ARM builds
           path: "C:/openssl-${{ matrix.WINDOWS.WINDOWS }}/"
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Configure OpenSSL
