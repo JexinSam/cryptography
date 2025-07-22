@@ -1,0 +1,130 @@
+name: Wheel Builder (Windows ARM Only)
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to build
+  push:
+    tags:
+      - '*.*'
+      - '*.*.*'
+  pull_request:
+    paths:
+      - .github/workflows/wheel-builder.yml
+      - .github/requirements/**
+      - pyproject.toml
+      - vectors/pyproject.toml
+
+env:
+  BUILD_REQUIREMENTS_PATH: .github/requirements/build-requirements.txt
+  UV_REQUIREMENTS_PATH: .github/requirements/uv-requirements.txt
+
+jobs:
+  sdist:
+    runs-on: ubuntu-latest
+    name: sdists
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.version || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13" # Using 3.13 for sdist creation
+        timeout-minutes: 3
+      - run: python -m pip install -r $UV_REQUIREMENTS_PATH
+
+      - name: Make sdist (cryptography)
+        run: uv build --build-constraint=$BUILD_REQUIREMENTS_PATH --require-hashes --sdist
+      - name: Make sdist and wheel (vectors)
+        run: uv build --build-constraint=$BUILD_REQUIREMENTS_PATH --require-hashes vectors/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "cryptography-sdist"
+          path: dist/cryptography*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "vectors-sdist-wheel"
+          path: vectors/dist/cryptography*
+
+  windows-arm:
+    needs: [sdist]
+    runs-on: windows-latest-arm64 # Explicitly use ARM64 runner
+    strategy:
+      fail-fast: false
+      matrix:
+        PYTHON:
+          # Python versions for Windows ARM
+          - {VERSION: "3.11", ABI_VERSION: "py311"}
+          - {VERSION: "3.12", ABI_VERSION: "py312"}
+          - {VERSION: "3.13", ABI_VERSION: "py313"}
+        WINDOWS_ARM_CONFIG:
+          # Configuration specific to Windows ARM
+          - {ARCH: 'arm64', WINDOWS_PLATFORM: 'arm64', RUST_TRIPLE: 'aarch64-pc-windows-msvc'}
+    name: "Python ${{ matrix.PYTHON.VERSION }} on Windows ARM"
+    steps:
+      - name: Get build-requirements.txt from repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.version || github.ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            ${{ env.BUILD_REQUIREMENTS_PATH }}
+            ${{ env.UV_REQUIREMENTS_PATH }}
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cryptography-sdist
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.PYTHON.VERSION }}
+          architecture: ${{ matrix.WINDOWS_ARM_CONFIG.ARCH }}
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+        with:
+          toolchain: stable
+          target: ${{ matrix.WINDOWS_ARM_CONFIG.RUST_TRIPLE }}
+
+      - uses: dawidd6/action-download-artifact@ac66b43f0e6a346234dd65d4d0c8fbb31cb316e5 # v11
+        with:
+          repo: pyca/infra
+          workflow: build-windows-openssl.yml
+          branch: main
+          workflow_conclusion: success
+          name: "openssl-${{ matrix.WINDOWS_ARM_CONFIG.WINDOWS_PLATFORM }}" # Downloads 'openssl-arm64'
+          path: "C:/openssl-${{ matrix.WINDOWS_ARM_CONFIG.WINDOWS_PLATFORM }}/"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure OpenSSL
+        run: |
+            echo "OPENSSL_DIR=C:/openssl-${{ matrix.WINDOWS_ARM_CONFIG.WINDOWS_PLATFORM }}" >> $GITHUB_ENV
+            echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+        shell: bash
+
+      - run: pip install -r "${UV_REQUIREMENTS_PATH}"
+        shell: bash
+      - run: mkdir wheelhouse
+      - run: |
+          if [ -n "${{ matrix.PYTHON.ABI_VERSION }}" ]; then
+              PY_LIMITED_API="--config-settings=build-args=--features=pyo3/abi3-${{ matrix.PYTHON.ABI_VERSION }}"
+          fi
+
+          uv build --wheel --require-hashes --build-constraint=$BUILD_REQUIREMENTS_PATH cryptography*.tar.gz $PY_LIMITED_API -o wheelhouse/
+        shell: bash
+
+      - run: uv venv
+      - run: uv pip install --require-hashes -r "${BUILD_REQUIREMENTS_PATH}"
+        shell: bash
+      - run: uv pip install cryptography --no-index -f wheelhouse/
+      - name: Print the OpenSSL we built and linked against
+        run: |
+            echo "from cryptography.hazmat.backends.openssl.backend import backend;print('Loaded: ' + backend.openssl_version_text());print('Linked Against: ' + backend._ffi.string(backend._lib.OPENSSL_VERSION_TEXT).decode('ascii'))" | uv run -
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "cryptography-${{ github.event.inputs.version }}-windows-arm-${{ matrix.PYTHON.VERSION }}-${{ matrix.PYTHON.ABI_VERSION }}"
+          path: wheelhouse\
